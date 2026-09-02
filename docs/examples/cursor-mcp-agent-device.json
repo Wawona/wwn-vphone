@@ -1,0 +1,10 @@
+{
+  "_comment": "Same shape as agent-device/docs/examples/cursor-mcp-agent-device.json",
+  "mcpServers": {
+    "agent-device": {
+      "command": "agent-device",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}
