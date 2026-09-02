@@ -32,3 +32,17 @@ No prebuilt VM is distributed. IPSWs download into `~/.vphone` at runtime
 
 Lab writes `vphone-<name>.json` (sock + SSH). Prefer device name
 `vphone wawona-jb`. Tipa/deb iteration: `agent-device packages …`.
+
+### Guest debugserver (lldb)
+
+Bootstrap installs Procursus `debugserver` via apt (idempotent). That is what
+`agent-device packages debug attach` starts before handing `connect://` to
+**user-lldb**.
+
+| Path | debugserver source |
+|---|---|
+| Physical / stock iOS | Xcode Developer Disk Image over lockdown |
+| **vphone-jb research guest** | **Procursus apt** `debugserver` (LLVM 16 meta package) |
+
+Same role Theos / Procursus device debugging already uses. Not a Wawona
+invention; the lab just refuses to leave it optional.

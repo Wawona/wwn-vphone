@@ -263,6 +263,29 @@ XML
   log "guest auto-lock disabled"
 }
 
+# Procursus debugserver for agent-device `packages debug attach` → user-lldb.
+# Physical iOS uses Xcode DDI debugserver over lockdown; vphone-jb uses apt.
+# Same package Theos / Procursus device debugging already expects.
+ensure_debugserver() {
+  local ip="$1"
+  log "ensuring guest Procursus debugserver (apt)…"
+  # shellcheck disable=SC2016
+  guest_ssh "$ip" '
+      export PATH="/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/usr/bin:/bin:$PATH"
+      set -e
+      if command -v debugserver >/dev/null 2>&1; then
+        echo "debugserver=present path=$(command -v debugserver)"
+        exit 0
+      fi
+      echo alpine | sudo -S -p "" apt-get update -qq || true
+      echo alpine | sudo -S -p "" apt-get install -y debugserver
+      command -v debugserver >/dev/null
+      echo "debugserver=installed path=$(command -v debugserver)"
+    ' 2>&1 | tee "$ART/debugserver.txt"
+  grep -q 'debugserver=' "$ART/debugserver.txt" || die "failed to install guest debugserver"
+  log "guest debugserver ready"
+}
+
 wait_ssh() {
   local timeout="${1:-600}" waited=0 ip
   log "waiting for guest SSH (dhcp/NAT :22222, timeout=${timeout}s)..."
@@ -318,6 +341,12 @@ smoke() {
       echo "uname: $(uname -a)"
       echo "sw_vers: $(sw_vers 2>/dev/null | tr "\n" " ")"
       test -d /var/jb/Applications/Sileo.app && echo Sileo=ok || { echo Sileo=missing; exit 10; }
+      if command -v debugserver >/dev/null 2>&1; then
+        echo "debugserver=ok path=$(command -v debugserver)"
+      else
+        echo "debugserver=missing"
+        exit 12
+      fi
       if grep -q "TrollStore Lite installed\|vphone_jb_setup.sh complete\|Already completed" /var/log/vphone_jb_setup.log 2>/dev/null; then
         echo TrollStore=ok
       else
@@ -335,7 +364,7 @@ smoke() {
     echo "SSH:   ssh -p 22222 mobile@$ip   # password alpine"
     echo "VNC:   vnc://$ip:5901"
     echo "vm:    $VM_NAME"
-    echo "Sileo + TrollStore Lite: verified"
+    echo "Sileo + TrollStore Lite + debugserver: verified"
   } | tee "$ART/ready.txt"
 
   # agent-device connection profile (Wawona fork discovers vphone:* devices).
@@ -444,6 +473,7 @@ if [[ "$SMOKE_ONLY" == 1 ]]; then
   ip="$(ssh_ready)" || die "guest SSH not up; run without --smoke-only"
   echo "$ip" >"$ART/guest-ip.txt"
   disable_autolock "$ip"
+  ensure_debugserver "$ip"
   smoke
   exit 0
 fi
@@ -460,5 +490,6 @@ fi
 launch_vm
 wait_ssh 900
 disable_autolock "$(cat "$ART/guest-ip.txt")"
+ensure_debugserver "$(cat "$ART/guest-ip.txt")"
 smoke
 exit 0
