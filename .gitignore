@@ -1,0 +1,13 @@
+result
+result-*
+.direnv
+*.qcow2
+Disk.img
+*.ipsw
+*.dmg
+.vphone/
+**/nvram.bin
+**/SEPStorage
+**/restore-info.json
+**/.vphoned.signed
+.DS_Store

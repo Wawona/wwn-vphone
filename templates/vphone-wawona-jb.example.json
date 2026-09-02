@@ -1,0 +1,12 @@
+{
+  "vmName": "wawona-jb",
+  "sockPath": "${VPHONE_ROOT:-$HOME/.vphone}/VMs/wawona-jb/vphone.sock",
+  "sshHost": "REPLACE_AFTER_LAB_guest-ip.txt",
+  "sshPort": 22222,
+  "sshUser": "mobile",
+  "sshPassword": "alpine",
+  "variant": "jb",
+  "vnc": "vnc://REPLACE_AFTER_LAB:5901",
+  "vmDir": "${VPHONE_ROOT:-$HOME/.vphone}/VMs/wawona-jb",
+  "_comment": "Template only. Prefer the JSON written by vphone-jb-lab after READY."
+}
