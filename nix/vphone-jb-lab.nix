@@ -24,5 +24,9 @@ writeShellApplication {
   ];
   # Embed the repo script so `nix run` works from any cwd once built.
   # Host /usr/bin/nc (macOS) is used for port probes.
-  text = builtins.readFile ../scripts/vphone-jb-lab.sh;
+  # VPHONE_PATCHES points at the AX / vphoned overlay for guest @eN refs.
+  text = ''
+    export VPHONE_PATCHES="${../patches}"
+    ${builtins.readFile ../scripts/vphone-jb-lab.sh}
+  '';
 }

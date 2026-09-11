@@ -1,15 +1,19 @@
 # vphone-cli CFW patches (Wawona)
 
-`vphoned_accessibility.*` implements `accessibility_tree` for agent-device `@eN`
-refs (app_list icon-grid heuristic until AXRuntime lands).
+`vphoned_accessibility.*` implements `accessibility_tree` for agent-device
+`snapshot -i` `@eN` refs:
 
-Apply into the local vphone-cli tree before `cfw install -V jb`:
+1. AXRuntime (`_AXUIElementCreateWithPid` + attribute walk)
+2. AccessibilityUtilities `AXElement` (system-wide)
+3. LSApplicationWorkspace icon-grid fallback
+
+`apply-vphoned-ax.sh` copies the sources into a vphone-cli checkout, adds
+weak UIKit/AXRuntime link flags, and merges AX entitlements.
 
 ```bash
-SRC="${VPHONE_ROOT:-$HOME/.vphone}/src/vphone-cli"
-cp dependencies/tools/vphone-patches/vphoned_accessibility.* "$SRC/scripts/vphoned/"
-# Also ensure vphoned.m advertises accessibility_tree when apps are available.
+# Lab does this automatically. Manual:
+bash patches/apply-vphoned-ax.sh "${VPHONE_ROOT:-$HOME/.vphone}/src/vphone-cli"
 ```
 
-Host sock `{"t":"ax"}` (VPhoneHostControl) falls back to `app_list` even before
-guest CFW is rebuilt.
+Host sock `{"t":"ax"}` (VPhoneHostControl) prefers guest `accessibility_tree`
+and falls back to `app_list` if the capability is missing.

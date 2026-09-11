@@ -56,6 +56,9 @@ Artifacts + agent-device profile: `~/.vphone/artifacts/…` and
 After the lab is READY:
 
 ```bash
+agent-device devices
+agent-device snapshot -i --device "vphone wawona-jb"
+agent-device press @e12
 agent-device packages status --device "vphone wawona-jb"
 agent-device packages tipa install path/to/App.tipa --open --jit
 agent-device packages apt install path/to/pkg.deb

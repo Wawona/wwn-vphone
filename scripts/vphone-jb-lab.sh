@@ -140,6 +140,30 @@ resolve_vphone() {
   fi
 }
 
+# Apply Wawona accessibility_tree sources into the local vphone-cli tree
+# before CFW / launch so guest vphoned can emit snapshot -i @eN nodes.
+apply_vphoned_ax() {
+  local here patches apply
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -n "${VPHONE_PATCHES:-}" && -d "$VPHONE_PATCHES" ]]; then
+    patches="$VPHONE_PATCHES"
+  elif [[ -d "$here/../patches" ]]; then
+    patches="$here/../patches"
+  elif [[ -d "$here/patches" ]]; then
+    patches="$here/patches"
+  else
+    log "warn: vphoned AX patches not found (set VPHONE_PATCHES); guest AX stays icon-grid"
+    return 0
+  fi
+  apply="$patches/apply-vphoned-ax.sh"
+  if [[ ! -x "$apply" && -f "$apply" ]]; then
+    chmod +x "$apply" 2>/dev/null || true
+  fi
+  if [[ -x "$apply" || -f "$apply" ]]; then
+    bash "$apply" "$SRC" || log "warn: apply-vphoned-ax failed (guest AX may stay icon-grid)"
+  fi
+}
+
 # Run under a pseudo-TTY so CFW sudo can use NOPASSWD without --sudo-password
 # (sudo -A / askpass fails when NOPASSWD is set but askpass returns a dummy).
 with_tty() {
@@ -190,11 +214,13 @@ ssh_ready() {
   return 1
 }
 
-# SSH to guest: always password auth, never askpass (nix openssh sets SSH_ASKPASS).
+# SSH to guest: lab credentials via sshpass. Never interactive askpass
+# (nix OpenSSH sets SSH_ASKPASS to a missing binary). Guest dropbear rejects
+# pubkey today; password alpine is the paired lab auth.
 guest_ssh() {
   local ip="$1"
   shift
-  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE SSH_ASKPASS_REQUIRE=never \
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE -u DISPLAY SSH_ASKPASS_REQUIRE=never \
     sshpass -p alpine ssh \
       -o StrictHostKeyChecking=no \
       -o UserKnownHostsFile=/dev/null \
@@ -467,6 +493,7 @@ check_gate
 [[ "$GATE_ONLY" == 1 ]] && { log "gate-only done"; exit 0; }
 
 resolve_vphone
+apply_vphoned_ax
 need_cmd nc
 
 if [[ "$SMOKE_ONLY" == 1 ]]; then

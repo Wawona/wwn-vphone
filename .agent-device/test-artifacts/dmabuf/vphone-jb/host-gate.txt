@@ -1,0 +1,6 @@
+=== host-gate Wed Sep  9 08:58:02 PDT 2026 ===
+System Integrity Protection status: disabled.
+Allow Research Guests status: enabled
+boot-args: boot-args	-arm64e_preview_abi amfi_get_out_of_my_way=1
+allows_security_research: 0
+free_g: 16

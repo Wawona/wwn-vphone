@@ -1,8 +1,9 @@
 /*
- * vphoned_accessibility — Accessibility tree query over vsock.
+ * vphoned_accessibility — Accessibility tree query over vsock (Wawona).
  *
- * Handles accessibility_tree. Currently a stub — requires XPC research
- * to properly query the accessibility tree from a daemon context.
+ * Walks AXRuntime / AccessibilityUtilities when the jailbreak guest exposes
+ * them, then falls back to an LSApplicationWorkspace icon grid so
+ * agent-device can always emit snapshot -i @eN refs.
  */
 
 #pragma once
