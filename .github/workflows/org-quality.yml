@@ -4,4 +4,4 @@ permissions:
   contents: read
 jobs:
   quality:
-    uses: Wawona/Wawona/.github/workflows/org-quality.yml@8ab01d9055fbb8c3732b9fb574e8ccce10c5f714
+    uses: Wawona/Wawona/.github/workflows/org-quality.yml@d73d3dc971ffc52da08a20d28f6be1d8cdc0be21
