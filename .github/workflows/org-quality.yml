@@ -1,0 +1,7 @@
+name: Wawona org quality
+on: [pull_request, push]
+permissions:
+  contents: read
+jobs:
+  quality:
+    uses: Wawona/Wawona/.github/workflows/org-quality.yml@8ab01d9055fbb8c3732b9fb574e8ccce10c5f714
