@@ -7,13 +7,13 @@ PATCH_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="${1:-${VPHONE_CLI_SRC:-${VPHONE_ROOT:-$HOME/.vphone}/src/vphone-cli}}"
 VPHONED="$SRC/scripts/vphoned"
 
-[[ -d "$VPHONED" ]] || {
-  echo "apply-vphoned-ax: missing $VPHONED" >&2
-  exit 1
-}
+if [[ -f "$SRC/VPhoneDaemon/Native/vphoned_ax_hierarchy.m" || ! -d "$VPHONED" ]]; then
+  echo "apply-vphoned-ax: vphone 2.x serves ui.tree; 1.x overlay not applied"
+  exit 0
+fi
 
 cp "$PATCH_DIR/vphoned_accessibility.h" "$VPHONED/vphoned_accessibility.h"
-cp "$PATCH_DIR/vphoned_accessibility.m" "$VPHONED/vphoned_accessibility.m"
+cp "$PATCH_DIR/vphoned_accessibility.c" "$VPHONED/vphoned_accessibility.c"
 
 MAKEFILE="$VPHONED/Makefile"
 if [[ -f "$MAKEFILE" ]] && ! grep -q 'framework CoreGraphics' "$MAKEFILE"; then

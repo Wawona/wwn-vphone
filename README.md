@@ -45,7 +45,9 @@ Apps:
 | App | Purpose |
 |---|---|
 | `vphone-jb-lab` | Full automated lab (default) |
+| `vphone-ipad-lab` | Same lab, iPad16,1 |
 | `vphone-cli` | Raw upstream CLI with nix PATH/tools |
+| `vphone-sock` | JSON client for a *running* guest (ping, files, launch, screenshot) |
 
 Guest SSH default (research image): `mobile` / `alpine`, port `22222`.
 Artifacts + agent-device profile: `~/.vphone/artifacts/…` and
@@ -64,6 +66,11 @@ agent-device packages tipa install path/to/App.tipa --open --jit
 agent-device packages apt install path/to/pkg.deb
 agent-device packages debug attach com.example.app
 ```
+
+Without SSH, do not call `packages status` / `packages apt`. Use
+`nix run .#vphone-sock -- ping` (or `python3 scripts/vphone-sock.py`)
+for files, Irisin `open-url`, and tipa sock install. Skill
+`wawona-vphone-cli`.
 
 See Wawona `docs/testing/vphone-jailbreak-lab.md` (pointer) and agent-device
 `help vphone-packages`.

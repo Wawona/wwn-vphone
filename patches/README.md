@@ -1,7 +1,12 @@
 # vphone-cli CFW patches (Wawona)
 
-`vphoned_accessibility.*` implements `accessibility_tree` for agent-device
-`snapshot -i` `@eN` refs:
+vphone-cli **2.6.0** serves accessibility on the host socket as
+`{"t":"rpc","method":"ui.tree"}` (alias `accessibility.tree`). Frames are
+screen points. `device.screen` `scale` converts them to the pixel coordinates
+`tap` uses. Do not apply this 1.x overlay onto a 2.x bundle.
+
+`vphoned_accessibility.*` is the **1.x** `accessibility_tree` overlay for
+agent-device `snapshot -i` `@eN` refs:
 
 1. AXRuntime (`_AXUIElementCreateWithPid` + attribute walk)
 2. AccessibilityUtilities `AXElement` (system-wide)

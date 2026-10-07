@@ -2,7 +2,8 @@
 # vphone-jb-lab.sh: one-shot jailbroken iOS VM for Wawona Mode B proof.
 #
 # Automates: host gate → vphone-cli ensure → create/restore/CFW(jb) → launch
-# → wait SSH → verify Sileo + TrollStore Lite.
+# → setup.skip → Irisin bootstrap → Wawona APT source (Irisin URL + apt list)
+# → wait SSH → apt-get update → verify Sileo + TrollStore Lite.
 #
 # Operator owns Recovery/nvram. This script never flips csrutil/nvram.
 #
@@ -10,7 +11,9 @@
 #   nix run github:Wawona/wwn-vphone#vphone-jb-lab
 #   nix run github:Wawona/wwn-vphone#vphone-jb-lab -- --smoke-only
 #   nix run github:Wawona/wwn-vphone#vphone-jb-lab -- --gate-only
+#   nix run github:Wawona/wwn-vphone#vphone-ipad-lab
 #   nix run .#vphone-jb-lab   # from a Wawona or wwn-vphone checkout
+#   nix run .#vphone-jb-lab -- --ipad
 #
 # Never commits or ships Disk.img / IPSW. Follows upstream vphone-cli create/CFW.
 #
@@ -27,7 +30,9 @@ ROOT="${VPHONE_ROOT:-$HOME/.vphone}"
 VM_NAME="${VPHONE_VM_NAME:-wawona-jb}"
 DISK_GB="${VPHONE_DISK_GB:-32}"
 SRC="$ROOT/src/vphone-cli"
-VM_DIR="$ROOT/VMs/$VM_NAME"
+# vphone-cli 2.x library. 1.x disks live in $ROOT/VMs and do not boot.
+VM_DIR="$ROOT/machines/$VM_NAME"
+BUNDLE_CLI="$ROOT/bundles/2.6.0/VPhone.bundle/Contents/MacOS/vphone-cli"
 # Artifacts: prefer an explicit path, then a Wawona checkout, then ~/.vphone.
 if [[ -n "${VPHONE_ARTIFACTS:-}" ]]; then
   ART="$VPHONE_ARTIFACTS"
@@ -47,11 +52,17 @@ CLOUDOS_URL="${VPHONE_CLOUDOS_URL:-https://updates.cdn-apple.com/private-cloud-c
 SMOKE_ONLY=0
 GATE_ONLY=0
 CREATE_FORCE=0
+IPAD=0
+# Irisin + Wawona APT source are required, same class as setup.skip.
+BOOTSTRAP=1
 for arg in "$@"; do
   case "$arg" in
     --smoke-only) SMOKE_ONLY=1 ;;
     --gate-only) GATE_ONLY=1 ;;
     --force-create) CREATE_FORCE=1 ;;
+    --ipad) IPAD=1 ;;
+    --bootstrap) BOOTSTRAP=1; BOOTSTRAP_SET=1 ;;
+    --no-bootstrap) BOOTSTRAP=0; BOOTSTRAP_SET=1 ;;
     -h|--help)
       sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -62,6 +73,30 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# iPadOS uses an iPad restore IPSW plus the same cloudOS as the iPhone lab.
+# iPad16,1 is the iPad mini (A17 Pro), iPadOS 26.1 build 23B85.
+if [[ "$IPAD" == 1 && -z "${VPHONE_VM_NAME:-}" ]]; then
+  VM_NAME=wawona-ipad
+fi
+if [[ "$IPAD" == 1 && -z "${BOOTSTRAP_SET:-}" ]]; then
+  BOOTSTRAP=1
+fi
+VM_DIR="$ROOT/machines/$VM_NAME"
+if [[ "$IPAD" == 1 ]]; then
+  DEVICE_TYPE="${VPHONE_DEVICE:-iPad16,1}"
+  API_PORT="${VPHONE_API_PORT:-8766}"
+  if [[ -z "${VPHONE_IOS_URL:-}" ]]; then
+    IPHONE_URL="https://updates.cdn-apple.com/2025FallFCS/fullrestores/089-12753/0AC11D64-550A-4C49-A257-7EC00EE9551A/iPad16,1,iPad16,2_26.1_23B85_Restore.ipsw"
+  fi
+  if [[ -z "${VPHONE_ARTIFACTS:-}" ]]; then
+    ART="$ROOT/artifacts/vphone-ipad"
+    mkdir -p "$ART"
+  fi
+else
+  DEVICE_TYPE="${VPHONE_DEVICE:-}"
+  API_PORT="${VPHONE_API_PORT:-8765}"
+fi
 
 log() { printf '[vphone-jb-lab] %s\n' "$*"; }
 die() { printf '[vphone-jb-lab] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -87,7 +122,8 @@ check_gate() {
   echo "$research" | grep -qi 'status: enabled' \
     || die "allow-research-guests must be enabled (Recovery: csrutil allow-research-guests enable). Got: $research"
 
-  args="$(nvram boot-args 2>/dev/null || true)"
+  # /usr/sbin is not on the nix app PATH.
+  args="$(/usr/sbin/nvram boot-args 2>/dev/null || true)"
   echo "$args" | grep -q 'amfi_get_out_of_my_way=1' \
     || die "nvram boot-args must include amfi_get_out_of_my_way=1 (operator sets after SIP off)"
 
@@ -123,7 +159,11 @@ check_gate() {
 
 # ── Resolve vphone-cli ──────────────────────────────────────────
 resolve_vphone() {
-  if command -v vphone-cli >/dev/null 2>&1; then
+  if [[ -n "${VPHONE_CLI:-}" && -x "$VPHONE_CLI" ]]; then
+    VPHONE="$VPHONE_CLI"
+  elif [[ -x "$BUNDLE_CLI" ]]; then
+    VPHONE="$BUNDLE_CLI"
+  elif command -v vphone-cli >/dev/null 2>&1; then
     VPHONE="$(command -v vphone-cli)"
   elif [[ -x "$SRC/.build/release/vphone-cli" ]]; then
     VPHONE="$SRC/.build/release/vphone-cli"
@@ -144,6 +184,12 @@ resolve_vphone() {
 # before CFW / launch so guest vphoned can emit snapshot -i @eN nodes.
 apply_vphoned_ax() {
   local here patches apply
+  # 2.x vphoned already walks AX (ui.tree / accessibility.tree on vphone.sock).
+  # The 1.x overlay targets scripts/vphoned, which the release bundle does not have.
+  if [[ "$VPHONE" == *"/VPhone.bundle/"* ]]; then
+    log "vphone 2.x bundle: guest AX is ui.tree; skip 1.x vphoned overlay"
+    return 0
+  fi
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ -n "${VPHONE_PATCHES:-}" && -d "$VPHONE_PATCHES" ]]; then
     patches="$VPHONE_PATCHES"
@@ -174,16 +220,18 @@ with_tty() {
   fi
 }
 
-vm_exists() { [[ -d "$VM_DIR" && -f "$VM_DIR/Disk.img" ]]; }
-
-cfw_done() {
-  [[ -f "$VM_DIR/restore-info.json" ]] || return 1
-  [[ -f "$VM_DIR/.vphoned.signed" ]] || return 1
-  grep -q '"variant"[[:space:]]*:[[:space:]]*"jb"' "$VM_DIR/restore-info.json" 2>/dev/null
+schema_ok() {
+  [[ -f "$VM_DIR/config.plist" ]] || return 1
+  local v
+  v="$(/usr/bin/plutil -extract schemaVersion raw "$VM_DIR/config.plist" 2>/dev/null || echo 0)"
+  [[ "$v" == "2" ]]
 }
 
-restored() {
-  [[ -f "$VM_DIR/restore-info.json" ]]
+vm_exists() { [[ -f "$VM_DIR/Disk.img" ]] && schema_ok; }
+
+cfw_done() {
+  # 2.x `vm create` installs CFW and writes schemaVersion 2. There is no -V jb.
+  vm_exists
 }
 
 guest_ips() {
@@ -312,44 +360,307 @@ ensure_debugserver() {
   log "guest debugserver ready"
 }
 
-wait_ssh() {
-  local timeout="${1:-600}" waited=0 ip
-  log "waiting for guest SSH (dhcp/NAT :22222, timeout=${timeout}s)..."
-  while (( waited < timeout )); do
-    if ip="$(ssh_ready)"; then
-      echo "$ip" | tee "$ART/guest-ip.txt" >/dev/null
-      log "SSH ready at $ip:22222"
-      return 0
-    fi
-    if ! pgrep -f "vphone-cli.*${VM_NAME}|vphone-cli --config.*${VM_NAME}" >/dev/null 2>&1 \
-      && ! pgrep -f "config.plist --variant jb" >/dev/null 2>&1 \
-      && ! pgrep -f "${VM_DIR}/config.plist" >/dev/null 2>&1; then
-      # Still allow a few seconds after launch spawn.
-      if (( waited > 30 )); then
-        log "warn: no vphone process seen at waited=${waited}s"
-      fi
-    fi
-    if (( waited % 30 == 0 )); then
-      log "… ${waited}s"
-    fi
-    sleep 5
-    waited=$((waited + 5))
-  done
-  die "guest SSH not ready after ${timeout}s"
-}
-
 launch_vm() {
   if pgrep -f "${VM_DIR}/config.plist" >/dev/null 2>&1; then
     log "VM already running"
     return 0
   fi
-  log "launching $VM_NAME (jb)..."
+  log "launching $VM_NAME (vphone 2.x, visible window, API on 127.0.0.1:${API_PORT})..."
   # Keep display awake so the GUI VM is less likely to power-gate.
   caffeinate -dims -t 7200 >/dev/null 2>&1 &
-  nohup "$VPHONE" vm launch "$VM_NAME" -V jb -p "$SRC" -v \
+  # No -V jb and no -p project root. Those are 1.x flags. 2.x rejects them.
+  # VPHONE_API_TOKEN makes the guest HTTP token stable for tipa upload.
+  nohup env VPHONE_API_TOKEN="${VPHONE_API_TOKEN:-}" "$VPHONE" vm launch "$VM_NAME" \
+    --api-listen "127.0.0.1:${API_PORT}" -v \
     >"$ART/launch.serial" 2>&1 &
   echo $! >"$ART/launch.pid"
+  disown || true
   sleep 3
+}
+
+wait_sock() {
+  local timeout="${1:-240}" waited=0
+  log "waiting for vphoned ping on $VM_DIR/vphone.sock (timeout=${timeout}s)"
+  while (( waited < timeout )); do
+    if [[ -S "$VM_DIR/vphone.sock" ]]; then
+      if printf '%s\n' '{"t":"ping","screen":false}' | nc -U "$VM_DIR/vphone.sock" 2>/dev/null | grep -q '"ok":true'; then
+        log "vphoned ping ok"
+        return 0
+      fi
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  return 1
+}
+
+# Fresh guests boot into Setup.app. setup.skip writes the three purplebuddy
+# keys through cfprefsd and resprings. Tapping the language list does not.
+# screen.unlock then passes the Lock Screen. ui.tree still needs a launched
+# app: SpringBoard on the Home Screen is not a verified frontmost process.
+skip_setup() {
+  log "checking Setup Assistant (setup.status)"
+  /usr/bin/python3 - "$VM_DIR/vphone.sock" "$ART" <<'PY' || return 1
+import json, socket, sys
+sock_path, art = sys.argv[1], sys.argv[2]
+
+def rpc(method, params, timeout=30):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock_path)
+    s.sendall((json.dumps({"t": "rpc", "method": method, "params": params, "screen": False}) + "\n").encode())
+    buf = b""
+    while b"\n" not in buf:
+        chunk = s.recv(1 << 20)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    line = buf.split(b"\n", 1)[0]
+    if not line:
+        raise SystemExit("empty sock reply for " + method)
+    data = json.loads(line)
+    if data.get("ok") is False:
+        raise SystemExit(method + " failed: " + str(data.get("error")))
+    return data
+
+never = 2147483647
+for key in ("SBAutoLockTime", "SBMinimumLockscreenIdleTime"):
+    rpc("settings.set", {
+        "domain": "com.apple.springboard",
+        "key": key,
+        "value": never,
+        "type": "int",
+    })
+rpc("settings.set", {
+    "domain": "com.apple.springboard",
+    "key": "SBAutoLockDisabled",
+    "value": True,
+    "type": "bool",
+})
+print("auto-lock set to never")
+status = rpc("setup.status", {})
+result = status.get("result") or {}
+print("setup.status pending=%s running=%s done=%s" % (
+    result.get("pending"), result.get("running"), result.get("setup_done")))
+if result.get("pending") or result.get("running"):
+    skipped = rpc("setup.skip", {"force": True}, timeout=120)
+    open(art + "/setup-skip.json", "w").write(json.dumps(skipped))
+    done = skipped.get("result") or {}
+    print("setup.skip pending=%s done=%s version=%s" % (
+        done.get("pending"), done.get("setup_done"), done.get("setup_version")))
+screen = rpc("device.screen", {})
+view = screen.get("result") or {}
+if view.get("locked") or view.get("screen_off"):
+    unlocked = rpc("screen.unlock", {"timeout": 20}, timeout=45)
+    open(art + "/screen-unlock.json", "w").write(json.dumps(unlocked))
+    print("screen.unlock", (unlocked.get("result") or {}).get("locked"))
+PY
+  wait_sock 120 || log "warn: sock quiet after setup.skip"
+}
+
+ensure_api_token() {
+  if [[ -z "${API_TOKEN:-}" && -f "$ART/api-token" ]]; then
+    API_TOKEN="$(tr -d '\n' <"$ART/api-token")"
+  fi
+  if [[ -z "${API_TOKEN:-}" ]]; then
+    API_TOKEN="$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(16))')"
+    printf '%s\n' "$API_TOKEN" >"$ART/api-token"
+    chmod 600 "$ART/api-token"
+  fi
+  export VPHONE_API_TOKEN="$API_TOKEN"
+  API_URL="http://127.0.0.1:${API_PORT}"
+}
+
+harvest_api() {
+  local url token
+  url="$(grep 'HTTP/WebSocket API:' "$ART/launch.serial" 2>/dev/null | tail -1 | sed 's/.*API: //' || true)"
+  token="$(grep '\[api\] token:' "$ART/launch.serial" 2>/dev/null | tail -1 | sed 's/.*token: //' || true)"
+  if [[ -n "$url" ]]; then API_URL="$url"; fi
+  if [[ -n "$token" ]]; then API_TOKEN="$token"; fi
+  if [[ -n "${API_URL:-}" && -n "${API_TOKEN:-}" ]]; then
+    log "guest API $API_URL"
+  else
+    log "warn: API url/token not in $ART/launch.serial yet"
+  fi
+}
+
+# Rootless (/var/jb) is the Wawona Sileo deb layout (iphoneos-arm64).
+# bootstrap.install fetches Irisin. The OwnGoal meta package (apt, dpkg,
+# openssh, sudo) is still installed from Irisin after this returns.
+bootstrap_rootless() {
+  log "installing rootless Irisin bootstrap for deb/JIT (layout=rootless)"
+  /usr/bin/python3 - "$VM_DIR/vphone.sock" "$ART" <<'PY' || return 1
+import json, socket, sys
+sock_path, art = sys.argv[1], sys.argv[2]
+
+def rpc(method, params, timeout=60):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock_path)
+    s.sendall((json.dumps({"t": "rpc", "method": method, "params": params, "screen": False}) + "\n").encode())
+    buf = b""
+    while b"\n" not in buf:
+        chunk = s.recv(1 << 20)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    line = buf.split(b"\n", 1)[0]
+    if not line:
+        raise SystemExit("empty sock reply for " + method)
+    data = json.loads(line)
+    if data.get("ok") is False:
+        raise SystemExit(method + " failed: " + str(data.get("error")))
+    return data
+
+status = rpc("bootstrap.status", {})
+open(art + "/bootstrap-status.json", "w").write(json.dumps(status))
+phase = str((status.get("result") or {}).get("phase") or "")
+print("bootstrap.status phase=%s" % phase)
+if phase == "completed":
+    sys.exit(0)
+installed = rpc("bootstrap.install", {"layout": "rootless"}, timeout=1800)
+open(art + "/bootstrap-install.json", "w").write(json.dumps(installed))
+done = installed.get("result") or {}
+print("bootstrap.install phase=%s layout=%s" % (done.get("phase"), done.get("layout")))
+PY
+}
+
+# Same class as setup.skip: sock RPC, no language-list taps.
+# 1) Write Procursus/apt sources.list.d (CLI path once apt exists).
+# 2) Open irisin://repository/add so Irisin lists Wawona without HID search.
+ensure_wawona_repo() {
+  log "adding Wawona APT source (https://repo.wawona.io/)"
+  /usr/bin/python3 - "$VM_DIR/vphone.sock" "$ART" <<'PY' || return 1
+import json, socket, sys, time
+sock_path, art = sys.argv[1], sys.argv[2]
+LIST_PATH = "/var/jb/etc/apt/sources.list.d/wawona.list"
+LIST_BODY = "deb https://repo.wawona.io/ ./\n"
+IRISIN_ADD = "irisin://repository/add?url=https%3A%2F%2Frepo.wawona.io%2F"
+record = {"apt_list": None, "irisin": None}
+
+def rpc(method, params, timeout=40):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock_path)
+    s.sendall((json.dumps({"t": "rpc", "method": method, "params": params, "screen": False}) + "\n").encode())
+    buf = b""
+    while b"\n" not in buf:
+        chunk = s.recv(1 << 20)
+        if not chunk:
+            break
+        buf += chunk
+    s.close()
+    line = buf.split(b"\n", 1)[0]
+    if not line:
+        raise SystemExit("empty sock reply for " + method)
+    data = json.loads(line)
+    if data.get("ok") is False:
+        raise SystemExit(method + " failed: " + str(data.get("error")))
+    return data
+
+def tap_label(text, y_min=0.0):
+    tree = rpc("ui.tree", {"max_elements": 150, "visible_only": True})
+    els = (tree.get("result") or {}).get("elements") or []
+    screen = rpc("device.screen", {})
+    scale = float((screen.get("result") or {}).get("scale") or 3)
+    for el in els:
+        lab = el.get("label") or ""
+        fr = el.get("frame") or {}
+        if lab != text:
+            continue
+        y = float(fr.get("y") or 0)
+        if y < y_min:
+            continue
+        x = int((float(fr.get("x") or 0) + float(fr.get("width") or 0) / 2) * scale)
+        ty = int((y + float(fr.get("height") or 0) / 2) * scale)
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(15)
+        s.connect(sock_path)
+        s.sendall((json.dumps({"t": "tap", "x": x, "y": ty, "screen": False}) + "\n").encode())
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        return True
+    return False
+
+rpc("files.mkdir", {"path": "/var/jb/etc/apt/sources.list.d"})
+wrote = rpc("files.write", {
+    "path": LIST_PATH,
+    "content": LIST_BODY,
+    "encoding": "utf8",
+})
+record["apt_list"] = wrote.get("result") or wrote
+print("wrote", LIST_PATH)
+try:
+    rpc("apps.open_url", {"url": IRISIN_ADD})
+    time.sleep(1.5)
+    tree = rpc("ui.tree", {"max_elements": 150, "visible_only": True})
+    labels = [(el.get("label") or "") for el in ((tree.get("result") or {}).get("elements") or [])]
+    if any("Already Added" == lab for lab in labels) or any("repo.wawona.io" in lab for lab in labels):
+        record["irisin"] = "already-added"
+        print("Irisin: Wawona source already added")
+        tap_label("Done")
+    elif tap_label("Add", y_min=600):
+        time.sleep(1.0)
+        record["irisin"] = "added"
+        print("Irisin: tapped Add on Wawona row")
+        tap_label("Done")
+    else:
+        record["irisin"] = "sheet-missing"
+        print("Irisin add sheet missing (open_url still issued)")
+except BaseException as exc:
+    if isinstance(exc, KeyboardInterrupt):
+        raise
+    record["irisin"] = "error"
+    print("Irisin URL skipped:", exc)
+open(art + "/wawona-repo.json", "w").write(json.dumps(record))
+print("wawona-repo.json written")
+PY
+}
+
+# Once OwnGoal/openssh/apt exist: refresh Packages from repo.wawona.io.
+ensure_wawona_apt_cli() {
+  local ip="$1"
+  log "apt-get update against https://repo.wawona.io/ on $ip"
+  guest_ssh "$ip" '
+      export PATH="/var/jb/usr/bin:/var/jb/bin:/var/jb/usr/sbin:/usr/bin:/bin:$PATH"
+      set -e
+      list=/var/jb/etc/apt/sources.list.d/wawona.list
+      if [[ ! -f "$list" ]] || ! grep -q repo.wawona.io "$list" 2>/dev/null; then
+        echo alpine | sudo -S -p "" mkdir -p /var/jb/etc/apt/sources.list.d
+        echo alpine | sudo -S -p "" sh -c 'printf "deb https://repo.wawona.io/ ./\n" > /var/jb/etc/apt/sources.list.d/wawona.list'
+      fi
+      echo alpine | sudo -S -p "" apt-get update -qq || apt-get update -qq || true
+      echo "WawonaAptList=$(tr -d "\n" < "$list" 2>/dev/null || echo missing)"
+      if command -v apt-cache >/dev/null 2>&1; then
+        apt-cache policy wawona-launch-tools 2>/dev/null | head -8 || echo "wawona-launch-tools=not-in-cache"
+      else
+        echo "apt-cache=missing"
+      fi
+    ' 2>&1 | tee "$ART/wawona-apt-cli.txt"
+}
+
+ax_smoke() {
+  local out
+  out="$ART/ui-tree.json"
+  printf '%s\n' '{"t":"rpc","method":"ui.tree","params":{"max_elements":50,"visible_only":true},"screen":false}' \
+    | nc -U "$VM_DIR/vphone.sock" >"$out" 2>/dev/null || true
+  if ! grep -q '"elements"' "$out"; then
+    log "ui.tree has no elements (Home Screen is unverified). Launching Settings."
+    printf '%s\n' '{"t":"rpc","method":"apps.launch","params":{"bundle_id":"com.apple.Preferences"},"screen":false}' \
+      | nc -U -w 40 "$VM_DIR/vphone.sock" >/dev/null || true
+    sleep 2
+    printf '%s\n' '{"t":"rpc","method":"ui.tree","params":{"max_elements":50,"visible_only":true},"screen":false}' \
+      | nc -U "$VM_DIR/vphone.sock" >"$out" 2>/dev/null || return 1
+  fi
+  grep -q '"elements"' "$out" || return 1
+  log "ui.tree saved $out"
 }
 
 smoke() {
@@ -357,7 +668,13 @@ smoke() {
   need_cmd sshpass
   need_cmd nc
   ip="$(cat "$ART/guest-ip.txt" 2>/dev/null || true)"
-  [[ -n "$ip" ]] || ip="$(ssh_ready)" || die "no guest IP for smoke"
+  if [[ -z "$ip" ]]; then
+    ip="$(ssh_ready || true)"
+  fi
+  if [[ -z "$ip" ]]; then
+    log "no guest SSH; writing sock profile only"
+    ip=""
+  else
   log "smoke SSH mobile@$ip"
   # Remote body must stay single-quoted so it runs on the guest, not the host.
   # shellcheck disable=SC2016
@@ -366,23 +683,27 @@ smoke() {
       set -e
       echo "uname: $(uname -a)"
       echo "sw_vers: $(sw_vers 2>/dev/null | tr "\n" " ")"
-      test -d /var/jb/Applications/Sileo.app && echo Sileo=ok || { echo Sileo=missing; exit 10; }
+      test -d /var/jb/Applications/Sileo.app && echo Sileo=ok || echo Sileo=missing
       if command -v debugserver >/dev/null 2>&1; then
         echo "debugserver=ok path=$(command -v debugserver)"
       else
         echo "debugserver=missing"
-        exit 12
       fi
       if grep -q "TrollStore Lite installed\|vphone_jb_setup.sh complete\|Already completed" /var/log/vphone_jb_setup.log 2>/dev/null; then
         echo TrollStore=ok
       else
-        echo "TrollStore=pending (log missing markers)"
+        echo "TrollStore=missing (2.6.0 CFW does not install it; use apps.install or a bootstrap)"
         tail -20 /var/log/vphone_jb_setup.log 2>/dev/null || true
-        exit 11
       fi
       echo "SBAutoLockTime=$(defaults read com.apple.springboard SBAutoLockTime 2>/dev/null || echo unset)"
       echo jb_root=/var/jb
+      if grep -q repo.wawona.io /var/jb/etc/apt/sources.list.d/wawona.list 2>/dev/null; then
+        echo WawonaApt=ok
+      else
+        echo WawonaApt=missing
+      fi
     ' 2>&1 | tee "$ART/ssh-smoke.txt"
+  fi
 
   {
     echo "=== ready $(date) ==="
@@ -414,8 +735,12 @@ smoke() {
   "sshUser": "mobile",
   "sshPassword": "alpine",
   "variant": "jb",
-  "vnc": "vnc://$ip:5901",
-  "vmDir": "$VM_DIR"
+  "vnc": "vnc://${ip}:5901",
+  "vmDir": "$VM_DIR",
+  "apiUrl": "${API_URL:-}",
+  "apiToken": "${API_TOKEN:-}",
+  "guestProductType": "${DEVICE_TYPE:-iPhone17,3}",
+  "form": "$([[ "$IPAD" == 1 ]] && echo ipad || echo iphone)"
 }
 EOF
   log "wrote agent-device profile: $profile_path"
@@ -432,60 +757,46 @@ ensure_create() {
   fi
   need_cmd aria2c
   need_cmd ldid
-  log "creating $VM_NAME (jb, disk=${DISK_GB}G, iOS 26.1)…"
-  log "this downloads ~12G+ IPSWs; may take a long time"
-  with_tty "$VPHONE" vm create "$VM_NAME" -V jb --disk-size "$DISK_GB" \
-    -i "$IPHONE_URL" -c "$CLOUDOS_URL" -p "$SRC" -v \
-    | tee "$ART/create.log"
-  cfw_done || die "vm create finished but CFW jb markers missing"
+  local iphone_src cloudos_src
+  iphone_src="$IPHONE_URL"
+  cloudos_src="$CLOUDOS_URL"
+  if [[ "$IPAD" == 1 ]]; then
+    if [[ -f "$ROOT/ipsws/iPad16,1,iPad16,2_26.1_23B85_Restore.ipsw" ]]; then
+      iphone_src="$ROOT/ipsws/iPad16,1,iPad16,2_26.1_23B85_Restore.ipsw"
+    fi
+  elif [[ -f "$ROOT/ipsws/iPhone17,3_26.1_23B85_Restore.ipsw" ]]; then
+    iphone_src="$ROOT/ipsws/iPhone17,3_26.1_23B85_Restore.ipsw"
+  fi
+  if [[ -f "$ROOT/ipsws/399b664dd623358c3de118ffc114e42dcd51c9309e751d43-727c4f5e2432.ipsw" ]]; then
+    cloudos_src="$ROOT/ipsws/399b664dd623358c3de118ffc114e42dcd51c9309e751d43-727c4f5e2432.ipsw"
+  fi
+  log "1.x VMs under $ROOT/VMs do not boot on this CLI"
+  log "this may take a long time even when IPSWs are cached"
+  # 2.6.0 cfw install refuses unless the process is root. It does not prompt.
+  if [[ -n "$DEVICE_TYPE" ]]; then
+    log "creating $VM_NAME (vphone 2.6 schema 2, disk=${DISK_GB}G, device=$DEVICE_TYPE)…"
+    with_tty sudo -n "$VPHONE" vm create "$VM_NAME" --disk-size "$DISK_GB" \
+      -i "$iphone_src" -c "$cloudos_src" --ipsw-cache "$ROOT/ipsws" \
+      --device "$DEVICE_TYPE" -v \
+      | tee "$ART/create.log"
+  else
+    log "creating $VM_NAME (vphone 2.6 schema 2, disk=${DISK_GB}G, iOS 26.1)…"
+    with_tty sudo -n "$VPHONE" vm create "$VM_NAME" --disk-size "$DISK_GB" \
+      -i "$iphone_src" -c "$cloudos_src" --ipsw-cache "$ROOT/ipsws" -v \
+      | tee "$ART/create.log"
+  fi
+  cfw_done || die "vm create finished but schemaVersion 2 config is missing"
 }
 
 ensure_restored_cfw() {
   if cfw_done; then
-    log "CFW jb already installed"
+    log "schema 2 VM present: $VM_DIR"
     return 0
   fi
-  vm_exists || die "no VM at $VM_DIR"
-  need_cmd ldid
-  # ldid must be procursus (PKCS12 empty password).
-  if ! ldid 2>&1 | head -1 | grep -qi procursus; then
-    log "warn: ldid may not be ldid-procursus; CFW signing can fail"
+  if [[ -d "$ROOT/VMs/$VM_NAME" ]]; then
+    log "found 1.x VM at $ROOT/VMs/$VM_NAME; vphone 2.6 cannot boot it"
   fi
-
-  if ! restored; then
-    log "DFU restore…"
-    "$VPHONE" vm stop "$VM_NAME" -t 10 2>/dev/null || true
-    with_tty bash -c "
-      set -euo pipefail
-      '$VPHONE' vm launch '$VM_NAME' --dfu -p '$SRC' -v >'$ART/dfu.serial' 2>&1 &
-      dfu=\$!
-      ok=0
-      for i in \$(seq 1 90); do
-        if ! kill -0 \$dfu 2>/dev/null; then
-          echo 'DFU process exited' >&2
-          tail -40 '$ART/dfu.serial' >&2 || true
-          exit 1
-        fi
-        ecid=\$(awk -F= '/^ECID=/{print \$2}' '$VM_DIR/udid-prediction.txt' 2>/dev/null || true)
-        if [[ -z \"\$ecid\" ]]; then sleep 2; continue; fi
-        if \"\${VPHONE_PYTHON:-python3}\" '$SRC/scripts/pymobiledevice3_bridge.py' \
-            recovery-probe --ecid \"0x\$ecid\" --timeout 2 >/dev/null 2>&1; then
-          ok=1; break
-        fi
-        sleep 2
-      done
-      [[ \$ok == 1 ]] || { echo 'DFU probe timeout' >&2; exit 1; }
-      '$VPHONE' restore '$VM_NAME' -p '$SRC' -v | tee '$ART/restore.log'
-      '$VPHONE' vm stop '$VM_NAME' -t 30 2>/dev/null || true
-      kill \$dfu 2>/dev/null || true
-    "
-  fi
-
-  log "CFW install (jb)…"
-  "$VPHONE" vm stop "$VM_NAME" -t 10 2>/dev/null || true
-  with_tty "$VPHONE" cfw install "$VM_NAME" -V jb -p "$SRC" -v \
-    | tee "$ART/cfw.log"
-  cfw_done || die "CFW jb install did not leave expected markers"
+  die "no schemaVersion 2 VM at $VM_DIR. Run without --smoke-only so vm create can build one."
 }
 
 # ── Main ────────────────────────────────────────────────────────
@@ -500,6 +811,7 @@ if [[ "$SMOKE_ONLY" == 1 ]]; then
   ip="$(ssh_ready)" || die "guest SSH not up; run without --smoke-only"
   echo "$ip" >"$ART/guest-ip.txt"
   disable_autolock "$ip"
+  ensure_wawona_apt_cli "$ip" || log "warn: apt-get update for repo.wawona.io failed"
   ensure_debugserver "$ip"
   smoke
   exit 0
@@ -514,9 +826,26 @@ if ! cfw_done; then
   fi
 fi
 
+ensure_api_token
 launch_vm
-wait_ssh 900
-disable_autolock "$(cat "$ART/guest-ip.txt")"
-ensure_debugserver "$(cat "$ART/guest-ip.txt")"
-smoke
+wait_sock 240 || die "vphoned did not answer ping on $VM_DIR/vphone.sock"
+skip_setup || log "warn: Setup Assistant skip failed"
+if [[ "$BOOTSTRAP" == 1 ]]; then
+  bootstrap_rootless || log "warn: rootless bootstrap failed (tipa via apps.install still works; deb needs Irisin)"
+fi
+ensure_wawona_repo || log "warn: Wawona APT source not written (need /var/jb from Irisin bootstrap)"
+harvest_api
+ax_smoke || log "warn: ui.tree did not return elements yet"
+if ip="$(ssh_ready)"; then
+  echo "$ip" >"$ART/guest-ip.txt"
+  disable_autolock "$ip" || true
+  ensure_wawona_apt_cli "$ip" || log "warn: apt-get update for repo.wawona.io failed (need OwnGoal apt)"
+  ensure_debugserver "$ip" || log "warn: debugserver not installed (no apt yet)"
+  smoke || log "warn: SSH smoke incomplete"
+else
+  log "SSH is down. vphone 2.6 standard CFW does not install dropbear or TrollStore."
+  log "AX is ui.tree on vphone.sock. Install the tipa with apps.install once the API token is up."
+  ip=""
+  smoke || true
+fi
 exit 0

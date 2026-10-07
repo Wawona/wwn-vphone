@@ -18,7 +18,25 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "vphone-cli": "vphone-cli"
+      }
+    },
+    "vphone-cli": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791210316,
+        "narHash": "sha256-863J3Gtl5GHHtXJsIrm4tf7uyczdnGhS5bb+8m52OmE=",
+        "owner": "Lakr233",
+        "repo": "vphone-cli",
+        "rev": "94376fe82a576b4e80086c8e3cbbd7d3bd99122f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Lakr233",
+        "ref": "2.6.0",
+        "repo": "vphone-cli",
+        "type": "github"
       }
     }
   },
