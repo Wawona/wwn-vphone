@@ -1,0 +1,25 @@
+name: Nix floor
+
+on:
+  push:
+    branches: [development, master, main]
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "**/*.nix"
+      - ".github/workflows/nix-floor.yml"
+  pull_request:
+    paths:
+      - "flake.nix"
+      - "flake.lock"
+      - "**/*.nix"
+      - ".github/workflows/nix-floor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Nix floor
+    uses: Wawona/Wawona/.github/workflows/nix-repo-floor.yml@development
